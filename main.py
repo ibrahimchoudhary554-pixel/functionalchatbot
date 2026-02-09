@@ -13,57 +13,60 @@ st.markdown("""
     <style>
     .stApp { background-color: #050505; color: #ff4b4b; }
     .disclaimer-box { border: 2px dashed #ffffff; padding: 15px; background-color: #330000; color: white; text-align: center; margin-bottom: 20px;}
+    .stChatFloatingInputContainer { background-color: #1a0000; }
     </style>
-    <div class="disclaimer-box">⚠️ IBRAHIM'S ROAST DUNGEON: Just jokes, don't cry about it.</div>
+    <div class="disclaimer-box">⚠️ ENTERTAINMENT ONLY: No personal malice toward victims from Ibrahim. Just AI jokes.</div>
     """, unsafe_allow_html=True)
 
-# --- 2. AUTHENTICATION (Initialization) ---
-# We use session state so users added via Signup are remembered during the session
+# --- 2. GOOGLE SHEETS FUNCTION (Defined Early) ---
+def log_to_sheet(user, prompt, response="[AI RATE LIMITED/PENDING]"):
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        # Ensure 'GCP_SERVICE_ACCOUNT' is formatted correctly in your Streamlit Secrets
+        creds_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+        gc = gspread.authorize(creds)
+        
+        # Opens the sheet named exactly: RoastBot_Logs
+        sheet = gc.open("RoastBot_Logs").sheet1
+        sheet.append_row([time.ctime(), user, prompt, response])
+        return True
+    except Exception as e:
+        # This will show in the sidebar if the connection fails
+        st.sidebar.error(f"GSheet Connection Error: {e}")
+        return False
+
+# --- 3. AUTHENTICATION ---
 if 'credentials' not in st.session_state:
     st.session_state['credentials'] = {"usernames": {}}
 
 authenticator = stauth.Authenticate(
     st.session_state['credentials'],
-    "roast_cookie",
-    "signature_key",
+    "roast_cookie_session",
+    "signature_key_123",
     cookie_expiry_days=30
 )
 
-# --- 3. LOGIN & SIGNUP UI ---
+# Login/Signup Tabs
 if not st.session_state.get("authentication_status"):
-    tab1, tab2 = st.tabs(["Log In", "Sign Up"])
+    tab1, tab2 = st.tabs(["🔒 Log In", "📝 Sign Up"])
     with tab2:
         try:
-            # register_user handles the signup form automatically
             if authenticator.register_user(location='main'):
-                st.success('Victim registered! Now go to the Log In tab.')
+                st.success('Victim registered! You can now Log In.')
         except Exception as e:
             st.error(f"Signup error: {e}")
     with tab1:
         authenticator.login()
 
-# --- 4. MAIN APP LOGIC (Only runs if logged in) ---
+# --- 4. MAIN CHAT INTERFACE ---
 if st.session_state.get("authentication_status"):
-    authenticator.logout("Logout", "sidebar")
     st.sidebar.title(f"Welcome, {st.session_state['name']}")
+    authenticator.logout("Logout", "sidebar")
     
-    # Model Selection to help with Rate Limits
-    model_choice = st.sidebar.selectbox("Choose AI Model:", ["Qwen/Qwen2.5-72B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"])
+    st.title("🤖 Ibrahim's Savage Bot")
+    st.info("If it says 'Rate Limit', wait 60 seconds. Every attempt is logged to the Google Sheet!")
 
-    # Google Sheets Logging Function
-    def log_to_sheet(user, prompt, response):
-        try:
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-            gc = gspread.authorize(creds)
-            # Make sure your GSheet is named "RoastBot_Logs"
-            sheet = gc.open("RoastBot_Logs").sheet1
-            sheet.append_row([time.ctime(), user, prompt, response])
-        except Exception as e:
-            st.sidebar.warning(f"GSheet Log Failed: {e}")
-
-    # Chat Interface
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -71,34 +74,41 @@ if st.session_state.get("authentication_status"):
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
 
-    if prompt := st.chat_input("Enter a name to roast..."):
+    if prompt := st.chat_input("Enter a name to destroy..."):
+        # 1. DISPLAY USER MESSAGE
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
+        # 2. IMMEDIATE LOGGING (Records the attempt before AI potentially crashes)
+        log_to_sheet(st.session_state["username"], prompt)
+
+        # 3. GENERATE AI ROAST
         with st.chat_message("assistant"):
-            # Safe list check for the boss
+            # Check for Ibrahim or the Safe List
             is_safe = any(n in prompt.lower() for n in ["ibrahim", "owner", "zainab"])
-            system_msg = "You are a humble servant. Be very polite." if is_safe else "You are a brutal roast bot. Use adult humor and roast them into the ground."
+            system_msg = "You are a polite, professional assistant." if is_safe else "You are a savage, brutal roast bot. Use hilarious adult humor. Roast the person the user mentioned."
 
             try:
+                # Using Qwen2.5 for better stability on free tier
                 client = OpenAI(base_url="https://router.huggingface.co/v1", api_key=st.secrets["HF_TOKEN"])
                 response = client.chat.completions.create(
-                    model=model_choice,
-                    messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}]
+                    model="Qwen/Qwen2.5-72B-Instruct",
+                    messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
+                    max_tokens=350
                 )
                 answer = response.choices[0].message.content
                 st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
                 
-                # SAVE TO SHEET
+                # 4. UPDATE LOG WITH ACTUAL ROAST
                 log_to_sheet(st.session_state["username"], prompt, answer)
                 
             except Exception as e:
-                st.error("Rate limit! Switch models in the sidebar or wait a minute.")
+                st.error("⚠️ Hugging Face Rate Limit. Your prompt was saved to the sheet, but the AI is tired. Try again in 1 minute.")
 
-# --- 5. ERROR HANDLING (Must be at the same level as the 'if' above) ---
+# --- 5. AUTH ERROR HANDLING ---
 elif st.session_state.get("authentication_status") is False:
-    st.error("Username/password is incorrect")
+    st.error("Username or password incorrect.")
 elif st.session_state.get("authentication_status") is None:
-    st.warning("Please Login or Sign Up to enter the Dungeon.")
+    st.warning("Please Login or Sign Up to access the bot.")
